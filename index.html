@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>School Stock Trainer — Final</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+
+  <!-- TradingView -->
+  <script src="https://s3.tradingview.com/tv.js"></script>
+
+  <!-- Firebase (compat version for simplicity) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+
+  <style>
+    :root { --bg:#07101a; --card:#0f1722; --accent:#06c; --muted:#9fb0c8; --text:#e6f0f6; }
+    body{ margin:0; font-family:Inter, Arial, sans-serif; background:linear-gradient(180deg,#031020,#07101a); color:var(--text); }
+    .wrap{ max-width:1000px; margin:20px auto; padding:18px; }
+    .card{ background:var(--card); padding:14px; border-radius:10px; box-shadow: 0 6px 20px rgba(0,0,0,0.6); margin-bottom:12px; }
+    h1,h2 { margin:6px 0 12px; }
+    input,button,select{ padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,0.06); background:transparent; color:var(--text); }
+    .row{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    table{ width:100%; border-collapse:collapse; margin-top:8px; }
+    th,td{ text-align:left; padding:8px; border-bottom:1px dashed rgba(255,255,255,0.03); color:var(--muted); font-size:14px; }
+    .btn{ background:var(--accent); color:#fff; border:none; padding:8px 12px; border-radius:8px; cursor:pointer; }
+    .danger{ background:#c03; }
+    .small{ color:var(--muted); font-size:13px; }
+    .hidden{ display:none; }
+    #topLogout{ position:fixed; right:18px; top:18px; z-index:50; }
+  </style>
+</head>
+<body>
+  <div id="topLogout" class="hidden">
+    <button id="logoutBtn" class="btn">Logout</button>
+  </div>
+
+  <div class="wrap">
+    <div id="gate" class="card">
+      <h2>Enter Event Password</h2>
+      <p class="small">Only attendees with the event password can access the site.</p>
+      <div class="row">
+        <input id="commonPasswordInput" placeholder="Event password" />
+        <button id="openGateBtn" class="btn">Open</button>
+      </div>
+    </div>
+
+    <div id="authCard" class="card hidden">
+      <h2>Login / Register (fake email ok)</h2>
+      <div class="row">
+        <input id="email" type="email" placeholder="email@example.com" />
+        <input id="pwd" type="password" placeholder="password" />
+        <button id="loginBtn" class="btn">Login / Register</button>
+      </div>
+      <p class="small">New users get ₹100,000 virtual balance. Admin: use admin account to see admin panel.</p>
+    </div>
+
+    <div id="dashboard" class="card hidden">
+      <h2>Trading Dashboard</h2>
+
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div>
+          <div class="small">Logged in as <strong id="userEmail">—</strong></div>
+          <div class="small">Balance: <strong id="balance">₹0</strong></div>
+        </div>
+        <div>
+          <input id="searchSymbol" placeholder="Symbol (e.g. NSE:TCS or NASDAQ:AAPL)" />
+          <button id="fetchBtn" class="btn">Fetch</button>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <div style="flex:1; min-width:320px;">
+          <div id="quoteArea" class="card small">Price info will show here.</div>
+          <div style="margin-top:10px;">
+            <input id="qty" type="number" placeholder="Qty" style="width:120px" value="1"/>
+            <button id="buyBtn" class="btn">Buy</button>
+            <button id="sellBtn" class="btn danger">Sell</button>
+          </div>
+          <div style="margin-top:12px;">
+            <h3 class="small">Holdings</h3>
+            <table id="holdingsTable"><thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>Value</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+
+        <div style="flex:1; min-width:320px;">
+          <div id="tv_chart" style="height:360px;"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <h3 class="small">Transactions</h3>
+        <table id="txTable"><thead><tr><th>Date</th><th>Symbol</th><th>Type</th><th>Qty</th><th>Price</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div id="adminPanel" class="card hidden">
+      <h2>Admin Panel</h2>
+      <p class="small">Visible to admin account (admin6@vse.com)</p>
+
+      <h3 class="small">Leaderboard (by balance)</h3>
+      <table id="leaderboard"><thead><tr><th>Rank</th><th>Email</th><th>Balance</th></tr></thead><tbody></tbody></table>
+
+      <h3 class="small" style="margin-top:12px">All Users</h3>
+      <table id="usersTable"><thead><tr><th>Email</th><th>Balance</th><th>Portfolio Value</th></tr></thead><tbody></tbody></table>
+
+      <h3 class="small" style="margin-top:12px">All Transactions</h3>
+      <table id="allTx"><thead><tr><th>Date</th><th>Email</th><th>Symbol</th><th>Type</th><th>Qty</th><th>Price</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+<script>
+/* ============================
+   CONFIG — Already provided by you
+   ============================ */
+const COMMON_SITE_PASSWORD = 'school2025';           // event password (you gave this earlier)
+const ADMIN_EMAIL = 'admin6@vse.com';               // admin email you provided
+const FINNHUB_API_KEY = 'd3bm7n1r01qqg7bv706gd3bm7n1r01qqg7bv7070'; // your Finnhub key
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA1fICvz9KtK9S4bqWtZkvjsd03P9iw0qs",
+  authDomain: "stocktrainer-35059.firebaseapp.com",
+  projectId: "stocktrainer-35059",
+  storageBucket: "stocktrainer-35059.firebasestorage.app",
+  messagingSenderId: "586107723879",
+  appId: "1:586107723879:web:36dd00ba4c12969557f4c2"
+};
+
+/* ============================
+   Initialize Firebase (compat)
+   ============================ */
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+/* ============================
+   UI refs
+   ============================ */
+const gate = document.getElementById('gate');
+const openGateBtn = document.getElementById('openGateBtn');
+const commonPasswordInput = document.getElementById('commonPasswordInput');
+
+const authCard = document.getElementById('authCard');
+const emailEl = document.getElementById('email');
+const pwdEl = document.getElementById('pwd');
+const loginBtn = document.getElementById('loginBtn');
+
+const dashboard = document.getElementById('dashboard');
+const userEmailEl = document.getElementById('userEmail');
+const balanceEl = document.getElementById('balance');
+const holdingsTableBody = document.querySelector('#holdingsTable tbody');
+const txTableBody = document.querySelector('#txTable tbody');
+
+const searchSymbol = document.getElementById('searchSymbol');
+const fetchBtn = document.getElementById('fetchBtn');
+const quoteArea = document.getElementById('quoteArea');
+const tvChart = document.getElementById('tv_chart');
+const qtyInput = document.getElementById('qty');
+const buyBtn = document.getElementById('buyBtn');
+const sellBtn = document.getElementById('sellBtn');
+
+const adminPanel = document.getElementById('adminPanel');
+const leaderboardBody = document.querySelector('#leaderboard tbody');
+const usersTableBody = document.querySelector('#usersTable tbody');
+const allTxBody = document.querySelector('#allTx tbody');
+
+const logoutBtn = document.getElementById('logoutBtn');
+const topLogout = document.getElementById('topLogout');
+
+let currentUser = null;
+let currentUserDocRef = null;
+
+/* ============================
+   Gate logic
+   ============================ */
+openGateBtn.addEventListener('click', ()=>{
+  const val = commonPasswordInput.value.trim();
+  if(!val) return alert('Enter site password');
+  if(val === COMMON_SITE_PASSWORD){
+    gate.classList.add('hidden');
+    authCard.classList.remove('hidden');
+    localStorage.setItem('site_opened', '1');
+  } else {
+    alert('Wrong site password');
+  }
+});
+if(localStorage.getItem('site_opened')){
+  gate.classList.add('hidden');
+  authCard.classList.remove('hidden');
+}
+
+/* ============================
+   Auth (signup/login)
+   ============================ */
+loginBtn.addEventListener('click', async ()=>{
+  const email = emailEl.value.trim();
+  const pwd = pwdEl.value.trim();
+  if(!email || !pwd) return alert('enter email and password');
+
+  try {
+    let cred;
+    try {
+      cred = await auth.signInWithEmailAndPassword(email, pwd);
+    } catch (err) {
+      // if sign in fails, try to create user
+      cred = await auth.createUserWithEmailAndPassword(email, pwd);
+    }
+    // user will be handled by onAuthStateChanged listener
+  } catch (e){
+    console.error(e);
+    alert('Auth error: '+e.message);
+  }
+});
+
+logoutBtn.addEventListener('click', ()=>{ auth.signOut(); location.reload(); });
+
+/* ============================
+   After login listener
+   ============================ */
+auth.onAuthStateChanged(async (user)=>{
+  if(user){
+    currentUser = user;
+    // set user doc if not exists
+    currentUserDocRef = db.collection('users').doc(user.uid);
+    const snap = await currentUserDocRef.get();
+    if(!snap.exists){
+      await currentUserDocRef.set({
+        email: user.email,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        balance: 100000,
+        holdings: {},
+        transactions: []
+      });
+    }
+    showDashboardFor(user);
+  } else {
+    // not logged in
+    currentUser = null;
+    currentUserDocRef = null;
+    authCard.classList.remove('hidden');
+    dashboard.classList.add('hidden');
+    adminPanel.classList.add('hidden');
+    topLogout.classList.add('hidden');
+  }
+});
+
+/* ============================
+   Show dashboard: listen to user doc
+   ============================ */
+function showDashboardFor(user){
+  authCard.classList.add('hidden');
+  dashboard.classList.remove('hidden');
+  topLogout.classList.remove('block');
+  logoutBtn.parentElement.classList.remove('hidden');
+  topLogout.classList.remove('hidden');
+
+  userEmailEl.textContent = user.email;
+
+  // show admin panel only if email matches admin email (simple)
+  if(user.email === ADMIN_EMAIL){
+    adminPanel.classList.remove('hidden');
+    loadAdminData();
+  } else {
+    adminPanel.classList.add('hidden');
+  }
+
+  // listen to changes
+  currentUserDocRef.onSnapshot(doc=>{
+    const data = doc.data();
+    renderUserData(data);
+  });
+}
+
+/* ============================
+   Render user data
+   ============================ */
+function renderUserData(data){
+  balanceEl.textContent = '₹' + (data.balance || 0).toLocaleString();
+  // holdings
+  const holdings = data.holdings || {};
+  holdingsTableBody.innerHTML = '';
+  const syms = Object.keys(holdings);
+  if(syms.length===0){
+    holdingsTableBody.innerHTML = '<tr><td colspan="4" class="small">No holdings</td></tr>';
+  } else {
+    syms.forEach(sym=>{
+      const h = holdings[sym];
+      const value = (h.qty || 0) * (h.avgPrice || 0);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${sym}</td><td>${h.qty||0}</td><td>₹${(h.avgPrice||0).toFixed(2)}</td><td>₹${value.toFixed(2)}</td>`;
+      holdingsTableBody.appendChild(tr);
+    });
+  }
+
+  // transactions
+  const txs = data.transactions || [];
+  txTableBody.innerHTML = '';
+  txs.slice().reverse().forEach(tx=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${new Date(tx.ts).toLocaleString()}</td><td>${tx.sym}</td><td>${tx.type}</td><td>${tx.qty}</td><td>₹${tx.price.toFixed(2)}</td>`;
+    txTableBody.appendChild(tr);
+  });
+}
+
+/* ============================
+   Price fetch & TradingView
+   ============================ */
+fetchBtn.addEventListener('click', async ()=>{
+  const s = searchSymbol.value.trim();
+  if(!s) return alert('Enter symbol (e.g. NSE:TCS)');
+  quoteArea.textContent = 'Loading...';
+  const q = await fetchQuote(s);
+  if(q.error){
+    quoteArea.textContent = 'Error: '+q.error;
+    return;
+  }
+  quoteArea.innerHTML = `<strong>${s}</strong> — ₹${q.current} <div class="small">O:${q.open} H:${q.high} L:${q.low}</div>`;
+  renderTradingView(s);
+});
+
+async function fetchQuote(sym){
+  if(!FINNHUB_API_KEY) return { error: 'No Finnhub API key set' };
+  try {
+    const enc = encodeURIComponent(sym);
+    const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${enc}&token=${FINNHUB_API_KEY}`);
+    if(!res.ok) throw new Error('Quote fetch failed');
+    const j = await res.json();
+    if(j && typeof j.c === 'number') return { current: j.c, open: j.o, high: j.h, low: j.l };
+    return { error: 'No price returned' };
+  } catch (e){
+    console.error(e);
+    return { error: e.message };
+  }
+}
+
+function renderTradingView(symbol){
+  tvChart.innerHTML = '';
+  try {
+    new TradingView.widget({
+      "width": "100%",
+      "height": 360,
+      "symbol": symbol,
+      "interval": "D",
+      "timezone": "Etc/UTC",
+      "theme": "Dark",
+      "style": "1",
+      "locale": "en",
+      "enable_publishing": false,
+      "allow_symbol_change": true,
+      "container_id": "tv_chart"
+    });
+  } catch (e){
+    console.error('TradingView render error:', e);
+  }
+}
+
+/* ============================
+   Buy / Sell logic
+   ============================ */
+buyBtn.addEventListener('click', ()=>trade('BUY'));
+sellBtn.addEventListener('click', ()=>trade('SELL'));
+
+async function trade(type){
+  const sym = searchSymbol.value.trim();
+  const qty = Number(qtyInput.value);
+  if(!sym || !qty || qty <= 0) return alert('Enter symbol and valid qty');
+
+  const q = await fetchQuote(sym);
+  if(q.error) return alert('Price fetch failed: '+q.error);
+  const price = q.current;
+
+  // transaction-safe update using Firestore transaction
+  try {
+    await db.runTransaction(async (tran)=>{
+      const doc = await tran.get(currentUserDocRef);
+      if(!doc.exists) throw new Error('User doc not found');
+
+      const data = doc.data();
+      let balance = data.balance || 0;
+      const holdings = data.holdings || {};
+      const transactions = data.transactions || [];
+
+      if(type === 'BUY'){
+        const cost = price * qty;
+        if(cost > balance) throw new Error('Insufficient virtual funds');
+        balance -= cost;
+        if(!holdings[sym]) holdings[sym] = { qty: 0, avgPrice: 0 };
+        const existing = holdings[sym];
+        const newQty = (existing.qty || 0) + qty;
+        const newAvg = ((existing.avgPrice || 0) * (existing.qty || 0) + (price * qty)) / newQty;
+        holdings[sym] = { qty: newQty, avgPrice: newAvg };
+        transactions.push({ ts: Date.now(), sym, type: 'BUY', qty, price });
+      } else {
+        // SELL
+        if(!holdings[sym] || (holdings[sym].qty || 0) < qty) throw new Error('Not enough shares to sell');
+        holdings[sym].qty = (holdings[sym].qty || 0) - qty;
+        balance += price * qty;
+        transactions.push({ ts: Date.now(), sym, type: 'SELL', qty, price });
+      }
+
+      tran.update(currentUserDocRef, { balance, holdings, transactions });
+    });
+
+    alert(type + ' executed successfully');
+  } catch (err){
+    console.error(err);
+    alert('Trade failed: ' + (err.message || err));
+  }
+}
+
+/* ============================
+   Admin functions
+   ============================ */
+async function loadAdminData(){
+  // load all users and leaderboard
+  const usersSnap = await db.collection('users').get();
+  usersTableBody.innerHTML = '';
+  allTxBody.innerHTML = '';
+  let lbArr = [];
+
+  for(const doc of usersSnap.docs){
+    const d = doc.data();
+    // compute portfolio value roughly using avgPrice * qty
+    let portVal = 0;
+    for(const sym in (d.holdings || {})){
+      const h = d.holdings[sym];
+      portVal += (h.qty || 0) * (h.avgPrice || 0);
+      // list transactions for allTx
+    }
+
+    usersTableBody.innerHTML += `<tr><td>${d.email || ''}</td><td>₹${(d.balance||0).toFixed(2)}</td><td>₹${portVal.toFixed(2)}</td></tr>`;
+
+    (d.transactions || []).forEach(tx=>{
+      allTxBody.innerHTML += `<tr><td>${new Date(tx.ts).toLocaleString()}</td><td>${d.email||''}</td><td>${tx.sym}</td><td>${tx.type}</td><td>${tx.qty}</td><td>₹${tx.price.toFixed(2)}</td></tr>`;
+    });
+
+    lbArr.push({ email: d.email, balance: d.balance || 0 });
+  }
+
+  lbArr.sort((a,b)=>b.balance - a.balance);
+  leaderboardBody.innerHTML = '';
+  lbArr.forEach((p,i)=>{
+    leaderboardBody.innerHTML += `<tr><td>${i+1}</td><td>${p.email}</td><td>₹${p.balance.toFixed(2)}</td></tr>`;
+  });
+}
+
+/* ============================
+   Start: nothing else to do
+   ============================ */
+</script>
+</body>
+</html>
+
